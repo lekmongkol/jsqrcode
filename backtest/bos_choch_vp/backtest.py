@@ -79,6 +79,8 @@ class Params:
     pd_mode: str = "none"     # premium/discount filter: none | leg | h4 | h4_opposite
     pd_level: float = 0.5     # sell needs entry at/above this fraction of the range (premium)
     be_lock: float = 0.0      # be_at_ob/partial: move SL this many USD past entry (spread -> true BE)
+    entry_mode: str = "poc"   # poc (wait POC pullback) | choch (sell at CHoCH close) | choch_fade (BUY at CHoCH close)
+    fade_sl: str = "mirror"   # choch_fade SL: mirror (same distance as the sell SL) | bar (CHoCH bar low) | atr (1 ATR)
     exit: str = "fixed"       # fixed (SL/TP) | trail_atr | trail_swing | partial_trail
     trail_start: float = 1.0  # start trailing once price is this many R in profit (SL also -> BE)
     trail_atr: float = 3.0    # trail_atr: stop = best price + x * ATR
@@ -223,6 +225,14 @@ def run_sell_engine(df: pd.DataFrame, p: Params, side="SELL"):
                 # BOS ... then CHoCH down -> new sell setup
                 hb = last_bos_bar + int(np.argmax(h[last_bos_bar:t + 1]))
                 setup = {"state": "await_low", "h_idx": hb, "H": h[hb], "choch_bar": t, "start": t}
+                if p.entry_mode != "poc":
+                    setup = None
+                    want = 1 if p.entry_mode == "choch_fade" else -1
+                    if t > in_trade_until and (p.trend == "none" or htf[t] == want):
+                        tr = choch_trade(o, h, l, c, a, tm, t, h[hb], p, side)
+                        if tr is not None:
+                            trades.append(tr)
+                            in_trade_until = (tm == np.datetime64(tr.exit_time)).argmax()
             trend = -1
             last_bos_bar = None
 
@@ -317,6 +327,39 @@ def simulate(o, h, l, c, tm, t, entry, sl, tp, risk, ob_edge, p: Params):
     part = (entry - c[-1]) / risk
     w = 0.5 if (half_done and pol == "partial") else 1.0
     return realized + w * part - cost, n - 1, {"exit": "EOD", "ob_hit": ob_hit}
+
+
+def choch_trade(o, h, l, c, a, tm, t, H, p: Params, side):
+    """Enter at the close of the CHoCH bar: with the CHoCH (short) or faded (long)."""
+    entry = c[t]
+    sell_risk = H + p.spread - entry
+    if p.entry_mode == "choch":
+        if sell_risk <= 0 or sell_risk < p.min_risk_atr * a[t]:
+            return None
+        tp = entry - p.rr * sell_risk
+        res = simulate(o, h, l, c, tm, t, entry, H + p.spread, tp, sell_risk, None, p)
+        r, j, extra = res
+        return Trade(side, pd.Timestamp(tm[t]), pd.Timestamp(tm[j]), entry, H + p.spread, tp, sell_risk, r,
+                     False, np.nan, H, np.nan, "choch", extra)
+    # fade: long at the CHoCH close
+    sl = {"mirror": entry - sell_risk, "bar": l[t] - p.spread, "atr": entry - a[t]}[p.fade_sl]
+    risk = entry - sl
+    if risk <= 0 or risk < p.min_risk_atr * a[t]:
+        return None
+    tp = entry + p.rr * risk
+    n = len(c)
+    for j in range(t + 1, n):
+        if l[j] <= sl:
+            r, ex = -1.0, "SL"
+            break
+        if h[j] >= tp:
+            r, ex = p.rr, "TP"
+            break
+    else:
+        j, r, ex = n - 1, (c[-1] - entry) / risk, "EOD"
+    opp = {"SELL": "BUY", "BUY": "SELL"}[side]
+    return Trade(opp, pd.Timestamp(tm[t]), pd.Timestamp(tm[j]), entry, sl, tp, risk, r - p.spread / risk,
+                 False, np.nan, H, np.nan, "choch_fade", {"exit": ex})
 
 
 def simulate_trail(h, l, c, a, t, entry, sl, risk, p: Params):
