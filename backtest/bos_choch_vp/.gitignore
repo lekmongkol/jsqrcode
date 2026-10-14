@@ -1,3 +1,4 @@
 data/*.csv
 results/*.csv
 __pycache__/
+results_grid.log
