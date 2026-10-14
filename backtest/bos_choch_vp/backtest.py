@@ -74,6 +74,7 @@ class Params:
     spread: float = 0.30      # USD round-trip cost
     min_risk_atr: float = 0.0 # skip if risk < x * ATR14
     min_ob_rr: float = 1.0    # tp_at_ob: need at least this R to the OB
+    be_lock: float = 0.0      # be_at_ob/partial: move SL this many USD past entry (spread -> true BE)
 
 
 @dataclass
@@ -268,25 +269,28 @@ def simulate(o, h, l, c, tm, t, entry, sl, tp, risk, ob_edge, p: Params):
         tp = new_tp
     stop = sl
     half_done = False
+    ob_hit = False      # price reached the OB (tracked for every policy)
     realized = 0.0
     for j in range(t + 1, n):
         if h[j] >= stop:   # stop first (conservative)
             part = (entry - stop) / risk
-            r = realized + (0.5 if half_done else 1.0) * part
-            return r - cost, j, {"exit": "SL" if stop == sl else "BE"}
+            r = realized + (0.5 if (half_done and pol == "partial") else 1.0) * part
+            return r - cost, j, {"exit": "SL" if stop == sl else "BE", "ob_hit": ob_hit}
+        if ob_edge is not None and l[j] <= ob_edge:
+            ob_hit = True
         if pol in ("be_at_ob", "partial") and not half_done and l[j] <= ob_edge:
             if pol == "partial":
                 realized += 0.5 * (entry - ob_edge) / risk
             half_done = True
-            stop = entry
+            stop = entry - p.be_lock
         if l[j] <= tp:
             part = (entry - tp) / risk
             w = 0.5 if (half_done and pol == "partial") else 1.0
-            return realized + w * part - cost, j, {"exit": "TP"}
+            return realized + w * part - cost, j, {"exit": "TP", "ob_hit": ob_hit}
     # end of data -> close at last price
     part = (entry - c[-1]) / risk
     w = 0.5 if (half_done and pol == "partial") else 1.0
-    return realized + w * part - cost, n - 1, {"exit": "EOD"}
+    return realized + w * part - cost, n - 1, {"exit": "EOD", "ob_hit": ob_hit}
 
 
 def invert(df):
