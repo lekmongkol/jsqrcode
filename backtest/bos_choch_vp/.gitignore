@@ -2,3 +2,5 @@ data/*.csv
 results/*.csv
 __pycache__/
 results_grid.log
+results_m30/
+m30.log

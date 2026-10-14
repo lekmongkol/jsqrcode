@@ -325,19 +325,19 @@ def to_frame(trades):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(HERE, "results"))
+    ap.add_argument("--tf", nargs="+", default=["M15", "M30", "H1"], help="timeframes to test")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
     d12 = load_2012()
     d26 = load_2026()
-    datasets = {
-        "M15": (d12, d26),
-        "H1": (resample(d12, "1h"), resample(d26, "1h")),
-    }
+    rules = {"M15": None, "M30": "30min", "H1": "1h"}
+    datasets = {tf: (d12, d26) if rules[tf] is None else (resample(d12, rules[tf]), resample(d26, rules[tf]))
+                for tf in args.tf}
     spreads = {"old": 0.30, "new": 0.50}   # gold ~1500-2000 vs ~4500 USD
     rows = []
     keep = {}
-    grid = itertools.product(["M15", "H1"], [3, 5], ["all", "none"],
+    grid = itertools.product(args.tf, [3, 5], ["all", "none"],
                              ["ignore", "skip", "tp_at_ob", "be_at_ob", "partial"], [2.0, 3.0])
     for tf, piv, pa, ob, rr in grid:
         old, new = datasets[tf]
