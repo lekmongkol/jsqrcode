@@ -74,6 +74,8 @@ class Params:
     spread: float = 0.30      # USD round-trip cost
     min_risk_atr: float = 0.0 # skip if risk < x * ATR14
     min_ob_rr: float = 1.0    # tp_at_ob: need at least this R to the OB
+    trend: str = "none"       # HTF filter: none | with (sell only in HTF downtrend) | against
+    session: str = "all"      # all | ldn | ny | both  (needs sess_* columns, see filters.py)
     be_lock: float = 0.0      # be_at_ob/partial: move SL this many USD past entry (spread -> true BE)
 
 
@@ -151,6 +153,8 @@ def run_sell_engine(df: pd.DataFrame, p: Params, side="SELL"):
     v = df["volume"].to_numpy(float); tm = df["time"].to_numpy()
     n = len(df); k = p.pivot
     a = atr(h, l, c)
+    htf = df["htf"].to_numpy() if "htf" in df else np.zeros(n)
+    sess = df[f"sess_{p.session}"].to_numpy(bool) if p.session != "all" else np.ones(n, bool)
 
     last_sh = None   # (idx, price, broken)
     last_sl = None
@@ -231,6 +235,8 @@ def run_sell_engine(df: pd.DataFrame, p: Params, side="SELL"):
             poc = setup["poc"]
             if h[t] < poc or c[t] >= poc or t <= in_trade_until:
                 continue
+            if not sess[t] or (p.trend == "with" and htf[t] != -1) or (p.trend == "against" and htf[t] != 1):
+                continue
             pat = bearish_pa(o, h, l, c, t, p.pa)
             if pat is None:
                 continue
@@ -294,8 +300,11 @@ def simulate(o, h, l, c, tm, t, entry, sl, tp, risk, ob_edge, p: Params):
 
 
 def invert(df):
-    return pd.DataFrame({"time": df["time"], "open": -df["open"], "high": -df["low"],
-                         "low": -df["high"], "close": -df["close"], "volume": df["volume"]})
+    out = df.copy()
+    out["open"], out["high"], out["low"], out["close"] = -df["open"], -df["low"], -df["high"], -df["close"]
+    if "htf" in df:
+        out["htf"] = -df["htf"]
+    return out
 
 
 def run(df, p: Params, sides=("SELL", "BUY")):
