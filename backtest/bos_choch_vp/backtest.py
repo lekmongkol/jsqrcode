@@ -79,6 +79,11 @@ class Params:
     pd_mode: str = "none"     # premium/discount filter: none | leg | h4 | h4_opposite
     pd_level: float = 0.5     # sell needs entry at/above this fraction of the range (premium)
     be_lock: float = 0.0      # be_at_ob/partial: move SL this many USD past entry (spread -> true BE)
+    exit: str = "fixed"       # fixed (SL/TP) | trail_atr | trail_swing | partial_trail
+    trail_start: float = 1.0  # start trailing once price is this many R in profit (SL also -> BE)
+    trail_atr: float = 3.0    # trail_atr: stop = best price + x * ATR
+    trail_bars: int = 6       # trail_swing: stop = highest high of the last N bars + spread
+    partial_r: float = 2.0    # partial_trail: close 50% here, trail the rest
 
 
 @dataclass
@@ -261,7 +266,10 @@ def run_sell_engine(df: pd.DataFrame, p: Params, side="SELL"):
             # fresh bullish OB between entry and TP?
             ob_tops = [ob[0] for ob in obs if not ob[3] and ob[2] < t and tp < ob[0] < entry]
             ob_edge = max(ob_tops) if ob_tops else None
-            res = simulate(o, h, l, c, tm, t, entry, sl, tp, risk, ob_edge, p)
+            if p.exit == "fixed":
+                res = simulate(o, h, l, c, tm, t, entry, sl, tp, risk, ob_edge, p)
+            else:
+                res = simulate_trail(h, l, c, a, t, entry, sl, risk, p)
             if res is None:
                 setup = None
                 continue
@@ -309,6 +317,29 @@ def simulate(o, h, l, c, tm, t, entry, sl, tp, risk, ob_edge, p: Params):
     part = (entry - c[-1]) / risk
     w = 0.5 if (half_done and pol == "partial") else 1.0
     return realized + w * part - cost, n - 1, {"exit": "EOD", "ob_hit": ob_hit}
+
+
+def simulate_trail(h, l, c, a, t, entry, sl, risk, p: Params):
+    """Short from close of bar t with no fixed TP: trail the stop once trail_start R is reached."""
+    n = len(c)
+    cost = p.spread / risk
+    stop, best = sl, entry
+    w, realized, active = 1.0, 0.0, False
+    for j in range(t + 1, n):
+        if h[j] >= stop:
+            return realized + w * (entry - stop) / risk - cost, j, {"exit": "trail" if active else "SL",
+                                                                    "mfeR": (entry - best) / risk}
+        best = min(best, l[j])
+        if p.exit == "partial_trail" and w == 1.0 and l[j] <= entry - p.partial_r * risk:
+            realized, w = 0.5 * p.partial_r, 0.5
+        if entry - best >= p.trail_start * risk:
+            active = True
+            if p.exit == "trail_atr":
+                level = best + p.trail_atr * a[j]
+            else:
+                level = h[max(j - p.trail_bars + 1, 0):j + 1].max() + p.spread
+            stop = min(stop, level, entry)   # never looser than breakeven once active
+    return realized + w * (entry - c[-1]) / risk - cost, n - 1, {"exit": "EOD", "mfeR": (entry - best) / risk}
 
 
 def invert(df):
