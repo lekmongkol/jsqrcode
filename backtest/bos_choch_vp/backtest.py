@@ -76,6 +76,8 @@ class Params:
     min_ob_rr: float = 1.0    # tp_at_ob: need at least this R to the OB
     trend: str = "none"       # HTF filter: none | with (sell only in HTF downtrend) | against
     session: str = "all"      # all | ldn | ny | both  (needs sess_* columns, see filters.py)
+    pd_mode: str = "none"     # premium/discount filter: none | leg | h4 | h4_opposite
+    pd_level: float = 0.5     # sell needs entry at/above this fraction of the range (premium)
     be_lock: float = 0.0      # be_at_ob/partial: move SL this many USD past entry (spread -> true BE)
 
 
@@ -155,6 +157,8 @@ def run_sell_engine(df: pd.DataFrame, p: Params, side="SELL"):
     a = atr(h, l, c)
     htf = df["htf"].to_numpy() if "htf" in df else np.zeros(n)
     sess = df[f"sess_{p.session}"].to_numpy(bool) if p.session != "all" else np.ones(n, bool)
+    rng_hi = df["rng_hi"].to_numpy(float) if "rng_hi" in df else np.full(n, np.nan)
+    rng_lo = df["rng_lo"].to_numpy(float) if "rng_lo" in df else np.full(n, np.nan)
 
     last_sh = None   # (idx, price, broken)
     last_sl = None
@@ -241,6 +245,14 @@ def run_sell_engine(df: pd.DataFrame, p: Params, side="SELL"):
             if pat is None:
                 continue
             entry = c[t]
+            if p.pd_mode != "none":
+                lo_, hi_ = (setup["L"], setup["H"]) if p.pd_mode == "leg" else (rng_lo[t], rng_hi[t])
+                if not hi_ > lo_:
+                    continue
+                pos = (entry - lo_) / (hi_ - lo_)
+                ok = pos <= 1 - p.pd_level if p.pd_mode == "h4_opposite" else pos >= p.pd_level
+                if not ok:
+                    continue
             sl = h[setup["l_idx"] + 1:t + 1].max() + p.spread
             risk = sl - entry
             if risk <= 0 or risk < p.min_risk_atr * a[t]:
@@ -304,6 +316,8 @@ def invert(df):
     out["open"], out["high"], out["low"], out["close"] = -df["open"], -df["low"], -df["high"], -df["close"]
     if "htf" in df:
         out["htf"] = -df["htf"]
+    if "rng_hi" in df:
+        out["rng_hi"], out["rng_lo"] = -df["rng_lo"], -df["rng_hi"]
     return out
 
 
