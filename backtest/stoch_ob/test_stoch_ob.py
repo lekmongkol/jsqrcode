@@ -351,6 +351,73 @@ def test_tp_closer_than_spread_is_too_close_even_with_min_rr_0():
     assert _open(BASE + [(100, 101, 99, 100)], -1, [50] * 6, p, bull=bull) is None
 
 
+# ------------------------------------------------------------------- H4 trend filter (spec 9)
+def test_htf_struct_trend_hand_case():
+    #              0   1   2   3   4   5   6   7   8   9  10
+    h = np.array([10, 11, 12, 15, 13, 12, 11, 12, 13, 16, 14.0])
+    l = np.array([9, 10, 11, 13, 11, 10, 8, 9, 10, 14, 12.0])
+    c = np.array([10, 11, 12, 14, 12, 11, 9, 11, 12, 15.5, 7.5])
+    tr = so.htf_struct_trend(h, l, c, 2)
+    # swing high 15 (bar 3) confirmed at t=5; close 15.5 > 15 at t=9 -> +1
+    # swing low 8 (bar 6) confirmed at t=8; close 7.5 < 8 at t=10 -> -1
+    assert list(tr) == [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, -1]
+
+
+def test_add_htf_uses_only_closed_h4_bars():
+    df = random_bars(400, seed=8)
+    for mode in ("struct", "ema"):
+        p = so.Params(htf_trend=mode)
+        got = so.add_htf(df, p).htf.to_numpy()
+        hb = so.resample(df, "4h")
+        if mode == "struct":
+            tr = so.htf_struct_trend(hb.high.to_numpy(), hb.low.to_numpy(), hb.close.to_numpy(), 3)
+        else:
+            tr = np.sign(hb.close - hb.close.ewm(span=50, adjust=False).mean()).to_numpy()
+        for i, t0 in enumerate(df.time):
+            closed = np.where(hb.time + pd.Timedelta("4h") <= t0 + pd.Timedelta("30min"))[0]
+            assert got[i] == (tr[closed[-1]] if len(closed) else 0.0), (mode, i)
+
+
+def test_htf_filter_no_lookahead_and_direction():
+    df = random_bars(1500, seed=31)
+    for mode in ("struct", "ema"):
+        p = so.Params(htf_trend=mode)
+        dfh = so.add_htf(df, p)
+        full = so.run(dfh, p)
+        assert len(full) > 10
+        sign = full.side.map({"SELL": -1.0, "BUY": 1.0}).to_numpy()
+        assert (dfh.htf.to_numpy()[full.entry_bar.to_numpy()] == sign).all()     # trades only with the trend
+        for _, tr in full.iloc[::3].iterrows():
+            e = int(tr.entry_bar)
+            for shift in (50.0, -50.0):
+                cut = df.iloc[:e + 2].copy().reset_index(drop=True)
+                px = cut.loc[e, "close"] + shift
+                cut.loc[e + 1, ["open", "high", "low", "close"]] = [px, px + 1, px - 1, px]
+                res = so.run(so.add_htf(cut, p), p)            # trend recomputed on the cut data
+                row = res[res.entry_bar == e] if len(res) else res
+                assert len(row) == 1, (mode, e, shift)
+                assert row.iloc[0].side == tr.side and np.isclose(row.iloc[0].sl, tr.sl)
+
+
+def test_htf_filter_symmetry():
+    df = random_bars(3000, seed=3)
+    inv = df.copy()
+    inv["open"], inv["high"], inv["low"], inv["close"] = -df.open, -df.low, -df.high, -df.close
+    for mode in ("struct", "ema"):
+        p = so.Params(htf_trend=mode)
+        a, b = so.run(so.add_htf(df, p), p), so.run(so.add_htf(inv, p), p)
+        assert len(a) == len(b) > 10
+        assert (a.side.map({"SELL": "BUY", "BUY": "SELL"}) == b.side).all() and np.allclose(a.r, b.r)
+
+
+def test_htf_missing_column_raises():
+    try:
+        so.run(random_bars(100), so.Params(htf_trend="struct"))
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError")
+
+
 if __name__ == "__main__":
     fns = [v for k_, v in dict(globals()).items() if k_.startswith("test_")]
     for fn in fns:

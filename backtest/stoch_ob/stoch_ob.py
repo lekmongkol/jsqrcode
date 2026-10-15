@@ -69,6 +69,11 @@ class Params:
     min_rr: float = 1.0           # nearest OB must give >= min_rr * risk (0 = no check)
     ob_too_close: str = "skip"    # skip | next
     ob_pivot: int = 3             # fractal size for swings / structure breaks
+    # higher-timeframe trend filter (spec 9) - needs the "htf" column from add_htf()
+    htf_trend: str = "none"       # none | struct | ema : SELL only in an H4 downtrend, BUY only in an uptrend
+    htf_rule: str = "4h"
+    htf_pivot: int = 3            # struct: fractal size on the H4 bars
+    htf_ema: int = 50             # ema: EMA length on H4 closes
     # costs
     spread: float = 0.30          # price units, charged once per trade
 
@@ -109,6 +114,52 @@ def entry_signals(k, d, p: Params):
     return sell, buy
 
 
+def htf_struct_trend(h, l, c, q):
+    """Market-structure trend on higher-timeframe bars (spec 9): +1 after a close above the last
+    confirmed swing high, -1 after a close below the last confirmed swing low, 0 before the first break."""
+    n = len(c)
+    trend = np.zeros(n)
+    sh = sl = None
+    cur = 0
+    for t in range(n):
+        i = t - q
+        if i - q >= 0:
+            if h[i] == h[i - q:t + 1].max() and h[i] > h[i - q:i].max():
+                sh = h[i]
+            if l[i] == l[i - q:t + 1].min() and l[i] < l[i - q:i].min():
+                sl = l[i]
+        up = sh is not None and c[t] > sh
+        dn = sl is not None and c[t] < sl
+        if up and not dn:
+            cur, sh = 1, None
+        elif dn and not up:
+            cur, sl = -1, None
+        elif up and dn:                      # ambiguous bar: both levels consumed, trend unchanged
+            sh = sl = None
+        trend[t] = cur
+    return trend
+
+
+def add_htf(df: pd.DataFrame, p: Params, bar: str = "30min") -> pd.DataFrame:
+    """Add column "htf" (+1 / -1 / 0): the H4 trend known at the CLOSE of each bar of df (spec 9).
+    An H4 bar starting at S is usable from the first df bar whose close (time + bar) is >= S + 4h."""
+    if p.htf_trend == "none":
+        return df.assign(htf=0.0)
+    hb = resample(df, p.htf_rule)
+    if p.htf_trend == "struct":
+        tr = htf_struct_trend(hb.high.to_numpy(float), hb.low.to_numpy(float), hb.close.to_numpy(float),
+                              p.htf_pivot)
+    elif p.htf_trend == "ema":
+        ema = hb.close.ewm(span=p.htf_ema, adjust=False).mean()
+        tr = np.sign(hb.close - ema).to_numpy()
+    else:
+        raise ValueError(p.htf_trend)
+    right = pd.DataFrame({"known": hb.time + pd.Timedelta(p.htf_rule), "htf": tr})
+    left = pd.DataFrame({"known": df.time + pd.Timedelta(bar)})
+    m = pd.merge_asof(left, right, on="known", direction="backward")
+    return df.assign(htf=m.htf.fillna(0.0).to_numpy())
+
+
 # ---------------------------------------------------------------------------- engine
 def run(df: pd.DataFrame, p: Params) -> pd.DataFrame:
     o = df["open"].to_numpy(float); h = df["high"].to_numpy(float)
@@ -116,6 +167,9 @@ def run(df: pd.DataFrame, p: Params) -> pd.DataFrame:
     tm = df["time"].to_numpy()
     n, q = len(df), p.ob_pivot
     k, d = stochastic(h, l, c, p.k_period, p.d_period, p.slowing)
+    if p.htf_trend != "none" and "htf" not in df:
+        raise ValueError("htf_trend needs the 'htf' column: df = add_htf(df, p)")
+    htf = df["htf"].to_numpy(float) if p.htf_trend != "none" else None
     a = atr(h, l, c)
     sell_sig, buy_sig = entry_signals(k, d, p)
 
@@ -180,6 +234,8 @@ def run(df: pd.DataFrame, p: Params) -> pd.DataFrame:
         elif buy_sig[t] and not (p.one_per_zone and used_dn == dn_ep):
             side, used_dn = 1, dn_ep
         if side == 0 or t < free_from or t == n - 1:
+            continue
+        if htf is not None and htf[t] != side:      # against (or unknown) H4 trend - visit already used
             continue
         tr = open_trade(t, side, o, h, l, c, k, a, tm, piv_hi, piv_lo, bull_obs, bear_obs, p)
         if tr is None:
