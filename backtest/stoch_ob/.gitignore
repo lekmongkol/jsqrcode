@@ -1,0 +1,4 @@
+results/
+__pycache__/
+results_run.log
+htf_run.log
