@@ -41,7 +41,7 @@ pivot high ที่แท่ง i: `high[i] = max(high[i-p .. i+p])` และ 
 ### 2.3 Order Block
 - **Bullish OB (demand)**: เมื่อแท่ง t ปิดเหนือ swing high ล่าสุดที่ยังไม่ถูกทะลุ (structure break ขึ้น)
   (ใช้ swing high **ล่าสุด** ที่ยืนยันแล้วเท่านั้น ถ้ามี pivot ใหม่มาแทน ตัวเก่าที่ยังไม่ถูกทะลุจะไม่ถูกนับ)
-  หาแท่ง low ต่ำสุด (`lo_bar`) **หลัง** แท่ง swing high (ไม่รวมแท่ง swing) ถึง t แล้วไล่ย้อนจาก `lo_bar` ถอยหลังไม่เกิน 5 แท่ง
+  หาแท่ง low ต่ำสุด (`lo_bar`) **หลัง** แท่ง swing high (ไม่รวมแท่ง swing) ถึง t แล้วไล่ย้อนจาก `lo_bar` ถอยหลังไม่เกิน 5 แท่ง (และไม่ย้อนไปถึงแท่ง swing)
   เพื่อหาแท่งแดง (`close < open`) แท่งแรก = OB · โซน = [low, high] ของแท่งนั้น · ใช้ได้ตั้งแต่แท่ง t
 - **Bearish OB (supply)**: กลับด้าน (ปิดใต้ swing low · แท่ง high สูงสุด · แท่งเขียวก่อนหน้า)
 - **Fresh**: ยังไม่ถูกราคาแตะหลังสร้าง (bullish: แตะเมื่อ `low ≤ top` ที่แท่งหลังแท่งสร้าง · bearish: `high ≥ bottom`)
@@ -91,6 +91,8 @@ pivot high ที่แท่ง i: `high[i] = max(high[i-p .. i+p])` และ 
 3. เลือกแบบจากช่วง in-sample เท่านั้น แล้วรายงานผล out-of-sample ตรงไปตรงมา
 
 ## 8. การตรวจสอบโค้ดก่อน backtest
+ผล review รอบที่ 2: **READY** · ตรงกับ reference implementation อิสระ 100% (9,449 เทรด) · ยืนยันว่าโมเดล bid/ask สมมาตร
+· แก้เพิ่ม: look-ahead test แบบแทนที่แท่ง e+1 ด้วยราคาโดดไกล, TP ต้องได้มากกว่า spread, หา OB ไม่ย้อนไปถึงแท่ง swing
 ผล review รอบที่ 1: ไม่พบ look-ahead · แก้ตามข้อเสนอ: one_per_zone, fractal SL, ตัด filter "TP ต้องกำไร" ที่ซ่อนอยู่
 (รวมเข้ากับกฎ min_rr), OB หา low หลังแท่ง swing, ไม่เปิดไม้แท่งสุดท้าย, runner แยก IS/OOS, เพิ่ม test 10 ตัว
 (look-ahead แบบตัดข้อมูลที่แท่งเข้าทุกไม้, OB, pivot, zone, edge cases) · โมเดล bid/ask คงไว้และอธิบายในข้อ 5

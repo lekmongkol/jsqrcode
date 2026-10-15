@@ -137,7 +137,8 @@ def test_buy_side_mirror():
 
 # ------------------------------------------------------------------ whole-engine checks
 def test_no_lookahead():
-    """Every entry decision must be reproducible from data[:entry_bar + 1] (nothing after the bar)."""
+    """Every entry decision must be reproducible from data[:entry_bar + 1]: keep one extra bar (entries on a
+    data set's last bar are not allowed) but replace it with a far-away bar, so any peek at it shows up."""
     df = random_bars(1500, seed=21)
     for kw in (dict(), dict(sl_mode="fractal"), dict(entry_mode="cross"), dict(entry_mode="exit_zone"),
                dict(ob_too_close="next"), dict(min_rr=0)):
@@ -146,14 +147,17 @@ def test_no_lookahead():
         assert len(full) > 20
         for _, tr in full.iloc[::4].iterrows():
             e = int(tr.entry_bar)
-            # +1 bar so the cut run is allowed to open on bar e (no entries on a data set's last bar)
-            cut = so.run(df.iloc[:e + 2].reset_index(drop=True), p)
-            row = cut[cut.entry_bar == e]
-            assert len(row) == 1, (kw, e)
-            row = row.iloc[0]
-            assert row.side == tr.side and np.isclose(row.entry, tr.entry) and np.isclose(row.sl, tr.sl)
-            assert (np.isnan(row.tp) and np.isnan(tr.tp)) or np.isclose(row.tp, tr.tp)
-            assert set(cut.entry_bar[cut.entry_bar < e]) <= set(full.entry_bar)
+            for shift in (50.0, -50.0):
+                cut = df.iloc[:e + 2].copy().reset_index(drop=True)
+                px = cut.loc[e, "close"] + shift
+                cut.loc[e + 1, ["open", "high", "low", "close"]] = [px, px + 1, px - 1, px]
+                res = so.run(cut, p)
+                row = res[res.entry_bar == e] if len(res) else res
+                assert len(row) == 1, (kw, e, shift)
+                row = row.iloc[0]
+                assert row.side == tr.side and np.isclose(row.entry, tr.entry) and np.isclose(row.sl, tr.sl)
+                assert (np.isnan(row.tp) and np.isnan(tr.tp)) or np.isclose(row.tp, tr.tp)
+                assert set(res.entry_bar[res.entry_bar < e]) <= set(full.entry_bar)
 
 
 def test_buy_sell_symmetry():
@@ -319,6 +323,32 @@ def test_nearest_ob_not_in_profit_is_too_close():
     p = so.Params(sl_lookback=3, spread=0.5, min_rr=1.0, ob_too_close="skip")
     bull = [(99.9, 99.0, 0, False), (90, 88, 0, False)]  # nearest TP 100.4 is not even in profit
     assert _open(BASE + [(100, 101, 89, 90)], -1, [50] * 6, p, bull=bull) is None
+
+
+def test_zone_visit_used_while_a_trade_is_open():
+    n = 80
+    df = random_bars(n, seed=6)
+    k = np.full(n, 50.0)
+    k[30:33] = [85, 90, 88]                              # sell hook at 32, opens a trade
+    k[40:46] = [10, 5, 8, 6, 9, 30]                      # buy hooks at 42, 44, 45 while the sell is still open
+    calls = []
+
+    def fake_stoch(h, l, c, kp, dp, sp):
+        return k.copy(), k.copy()
+
+    def open_until_43(t, side, *a):
+        calls.append(t)
+        return dict(exit_bar=43) if t == 32 else None
+
+    with patched(stochastic=fake_stoch, open_trade=open_until_43):
+        so.run(df, so.Params())
+    assert calls == [32]                                 # the visit's first buy signal (42) came during the trade
+
+
+def test_tp_closer_than_spread_is_too_close_even_with_min_rr_0():
+    p = so.Params(sl_lookback=3, spread=0.5, min_rr=0.0)
+    bull = [(99.2, 99.0, 0, False)]                      # TP 99.7: +0.3 gross, -0.2 after spread
+    assert _open(BASE + [(100, 101, 99, 100)], -1, [50] * 6, p, bull=bull) is None
 
 
 if __name__ == "__main__":

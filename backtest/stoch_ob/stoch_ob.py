@@ -153,14 +153,14 @@ def run(df: pd.DataFrame, p: Params) -> pd.DataFrame:
         if last_sh is not None and not last_sh[2] and c[t] > last_sh[1]:
             last_sh[2] = True
             lo_bar = last_sh[0] + 1 + int(np.argmin(l[last_sh[0] + 1:t + 1]))
-            for j in range(lo_bar, max(lo_bar - 5, 0) - 1, -1):
+            for j in range(lo_bar, max(lo_bar - 5, last_sh[0] + 1) - 1, -1):   # never before the swing
                 if c[j] < o[j]:
                     bull_obs.append([h[j], l[j], t, False])
                     break
         if last_sl is not None and not last_sl[2] and c[t] < last_sl[1]:
             last_sl[2] = True
             hi_bar = last_sl[0] + 1 + int(np.argmax(h[last_sl[0] + 1:t + 1]))
-            for j in range(hi_bar, max(hi_bar - 5, 0) - 1, -1):
+            for j in range(hi_bar, max(hi_bar - 5, last_sl[0] + 1) - 1, -1):
                 if c[j] > o[j]:
                     bear_obs.append([h[j], l[j], t, False])
                     break
@@ -215,7 +215,7 @@ def open_trade(t, side, o, h, l, c, k, a, tm, piv_hi, piv_lo, bull_obs, bear_obs
         else:
             levels = sorted(ob[1] - p.spread for ob in bear_obs if not ob[3] and ob[1] > entry)
         if levels:
-            need = max(p.min_rr * risk, 1e-9)       # a TP must at least be in profit
+            need = max(p.min_rr * risk, p.spread + 1e-9)   # TP must be in profit after the spread
             if side * (levels[0] - entry) >= need:
                 tp = levels[0]
             elif p.ob_too_close == "skip":
