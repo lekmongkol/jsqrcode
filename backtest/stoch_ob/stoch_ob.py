@@ -35,9 +35,11 @@ def load_2012() -> pd.DataFrame:
 
 
 def load_2026() -> pd.DataFrame:
-    """XAUUSD M15 2026-03 .. 2026-09 (UTC)."""
+    """XAUUSD M15 2026-03 .. 2026-09. The file is UTC; it is converted to the same broker clock as the
+    2012-2022 set (New York + 7h) so H4 candles start at the daily session break like in MT5."""
     df = pd.read_csv(os.path.join(DATA, "XAUUSD_15m_2026.csv"))
-    df["time"] = pd.to_datetime(df["datetime"], utc=True).dt.tz_localize(None)
+    utc = pd.to_datetime(df["datetime"], utc=True)
+    df["time"] = utc.dt.tz_convert("America/New_York").dt.tz_localize(None) + pd.Timedelta(hours=7)
     return df[["time", "open", "high", "low", "close", "volume"]]
 
 
@@ -134,28 +136,31 @@ def htf_struct_trend(h, l, c, q):
             cur, sh = 1, None
         elif dn and not up:
             cur, sl = -1, None
-        elif up and dn:                      # ambiguous bar: both levels consumed, trend unchanged
-            sh = sl = None
+        elif up and dn:                      # defensive only (cannot happen with unbroken levels):
+            sh = sl = None                   # both levels consumed, trend unchanged
         trend[t] = cur
     return trend
 
 
-def add_htf(df: pd.DataFrame, p: Params, bar: str = "30min") -> pd.DataFrame:
+def add_htf(df: pd.DataFrame, p: Params, bar: str | None = None) -> pd.DataFrame:
     """Add column "htf" (+1 / -1 / 0): the H4 trend known at the CLOSE of each bar of df (spec 9).
-    An H4 bar starting at S is usable from the first df bar whose close (time + bar) is >= S + 4h."""
+    An H4 bar starting at S is usable from the first df bar whose close (time + bar) is >= S + 4h.
+    bar = length of one df bar; inferred from the most common time step when not given."""
     if p.htf_trend == "none":
         return df.assign(htf=0.0)
+    step = pd.Timedelta(bar) if bar else df.time.diff().dropna().mode().iloc[0]
     hb = resample(df, p.htf_rule)
     if p.htf_trend == "struct":
         tr = htf_struct_trend(hb.high.to_numpy(float), hb.low.to_numpy(float), hb.close.to_numpy(float),
                               p.htf_pivot)
     elif p.htf_trend == "ema":
         ema = hb.close.ewm(span=p.htf_ema, adjust=False).mean()
-        tr = np.sign(hb.close - ema).to_numpy()
+        tr = np.sign(hb.close - ema).to_numpy().copy()
+        tr[:p.htf_ema] = 0.0                # EMA not warmed up yet -> trend unknown
     else:
         raise ValueError(p.htf_trend)
     right = pd.DataFrame({"known": hb.time + pd.Timedelta(p.htf_rule), "htf": tr})
-    left = pd.DataFrame({"known": df.time + pd.Timedelta(bar)})
+    left = pd.DataFrame({"known": df.time + step})
     m = pd.merge_asof(left, right, on="known", direction="backward")
     return df.assign(htf=m.htf.fillna(0.0).to_numpy())
 

@@ -372,7 +372,8 @@ def test_add_htf_uses_only_closed_h4_bars():
         if mode == "struct":
             tr = so.htf_struct_trend(hb.high.to_numpy(), hb.low.to_numpy(), hb.close.to_numpy(), 3)
         else:
-            tr = np.sign(hb.close - hb.close.ewm(span=50, adjust=False).mean()).to_numpy()
+            tr = np.sign(hb.close - hb.close.ewm(span=50, adjust=False).mean()).to_numpy().copy()
+            tr[:50] = 0.0
         for i, t0 in enumerate(df.time):
             closed = np.where(hb.time + pd.Timedelta("4h") <= t0 + pd.Timedelta("30min"))[0]
             assert got[i] == (tr[closed[-1]] if len(closed) else 0.0), (mode, i)
@@ -416,6 +417,54 @@ def test_htf_missing_column_raises():
     except ValueError:
         return
     raise AssertionError("expected ValueError")
+
+
+def test_counter_trend_first_signal_uses_up_the_visit():
+    n = 60
+    df = random_bars(n, seed=5).assign(htf=0.0)
+    df.loc[:32, "htf"] = 1.0                             # H4 up when the first sell hook comes (bar 32)
+    df.loc[33:, "htf"] = -1.0                            # H4 turns down before the next hooks (33..35)
+    k = np.full(n, 50.0)
+    k[30:36] = [85, 90, 88, 86, 84, 70]
+    calls = []
+    with patched(stochastic=lambda *a: (k.copy(), k.copy()),
+                 open_trade=lambda t, side, *a: calls.append(t)):
+        so.run(df, so.Params(htf_trend="struct"))
+    assert calls == []
+
+
+def test_ob_search_never_reaches_the_swing_bar():
+    rows = list(OB_ROWS)
+    rows[4] = (13.0, 14.0, 12.0, 14.0)                   # bars 4-6 green: only red candle is the swing bar 3
+    rows[5] = (12.0, 13.0, 11.5, 12.5)
+    rows[3] = (14.0, 15.0, 13.0, 13.5)                   # swing bar 3 is red
+    f, obs = _ob_run(rows)
+    assert obs == []
+
+
+def test_add_htf_with_gaps_and_partial_buckets():
+    df = random_bars(600, seed=9)
+    drop = list(range(40, 52)) + list(range(200, 203)) + [333, 334, 335, 336, 337]
+    df = df.drop(index=drop).reset_index(drop=True)      # weekend-like hole and partial buckets
+    p = so.Params(htf_trend="struct")
+    got = so.add_htf(df, p).htf.to_numpy()
+    hb = so.resample(df, "4h")
+    tr = so.htf_struct_trend(hb.high.to_numpy(), hb.low.to_numpy(), hb.close.to_numpy(), 3)
+    for i, t0 in enumerate(df.time):
+        closed = np.where(hb.time + pd.Timedelta("4h") <= t0 + pd.Timedelta("30min"))[0]
+        assert got[i] == (tr[closed[-1]] if len(closed) else 0.0)
+
+
+def test_htf_struct_trend_no_lookahead_on_h4_bars():
+    rng = np.random.default_rng(4)
+    c = 100 + np.cumsum(rng.normal(0, 1, 400))
+    h, l = c + rng.exponential(0.5, 400), c - rng.exponential(0.5, 400)
+    full = so.htf_struct_trend(h, l, c, 3)
+    for t in range(20, 399, 7):
+        hh, ll, cc = h[:t + 2].copy(), l[:t + 2].copy(), c[:t + 2].copy()
+        for shift in (40.0, -40.0):                      # poison the next H4 bar
+            hh[t + 1], ll[t + 1], cc[t + 1] = c[t] + shift + 1, c[t] + shift - 1, c[t] + shift
+            assert so.htf_struct_trend(hh, ll, cc, 3)[t] == full[t]
 
 
 if __name__ == "__main__":
