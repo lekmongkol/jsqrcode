@@ -467,6 +467,21 @@ def test_htf_struct_trend_no_lookahead_on_h4_bars():
             assert so.htf_struct_trend(hh, ll, cc, 3)[t] == full[t]
 
 
+def test_add_htf_alignment_on_h1_and_h4_charts():
+    """Higher-timeframe trend on H1 (filter H4) and H4 (filter D1) charts uses closed HTF bars only."""
+    m30 = random_bars(4000, seed=12)
+    for rule, htf_rule, step in (("1h", "4h", "1h"), ("4h", "1D", "4h")):
+        df = so.resample(m30, rule)
+        p = so.Params(htf_trend="struct", htf_rule=htf_rule)
+        got = so.add_htf(df, p).htf.to_numpy()                 # bar length inferred from the data
+        assert (got == so.add_htf(df, p, bar=rule).htf.to_numpy()).all()
+        hb = so.resample(df, htf_rule)
+        tr = so.htf_struct_trend(hb.high.to_numpy(), hb.low.to_numpy(), hb.close.to_numpy(), 3)
+        for i, t0 in enumerate(df.time):
+            closed = np.where(hb.time + pd.Timedelta(htf_rule) <= t0 + pd.Timedelta(step))[0]
+            assert got[i] == (tr[closed[-1]] if len(closed) else 0.0), (rule, i)
+
+
 if __name__ == "__main__":
     fns = [v for k_, v in dict(globals()).items() if k_.startswith("test_")]
     for fn in fns:
