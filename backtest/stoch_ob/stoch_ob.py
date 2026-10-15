@@ -152,14 +152,14 @@ def run(df: pd.DataFrame, p: Params) -> pd.DataFrame:
         # 3. structure breaks -> new OBs (spec 2.3)
         if last_sh is not None and not last_sh[2] and c[t] > last_sh[1]:
             last_sh[2] = True
-            lo_bar = last_sh[0] + int(np.argmin(l[last_sh[0]:t + 1]))
+            lo_bar = last_sh[0] + 1 + int(np.argmin(l[last_sh[0] + 1:t + 1]))
             for j in range(lo_bar, max(lo_bar - 5, 0) - 1, -1):
                 if c[j] < o[j]:
                     bull_obs.append([h[j], l[j], t, False])
                     break
         if last_sl is not None and not last_sl[2] and c[t] < last_sl[1]:
             last_sl[2] = True
-            hi_bar = last_sl[0] + int(np.argmax(h[last_sl[0]:t + 1]))
+            hi_bar = last_sl[0] + 1 + int(np.argmax(h[last_sl[0] + 1:t + 1]))
             for j in range(hi_bar, max(hi_bar - 5, 0) - 1, -1):
                 if c[j] > o[j]:
                     bear_obs.append([h[j], l[j], t, False])
@@ -172,24 +172,20 @@ def run(df: pd.DataFrame, p: Params) -> pd.DataFrame:
             if k[t] <= p.lower and not (k[t - 1] <= p.lower):
                 dn_ep += 1
 
-        # 4/5. entries
-        if t < free_from:
-            continue
+        # 4/5. entries - only the first signal of a zone visit counts (one_per_zone), even if it is
+        # skipped by a filter or arrives while a trade is still open (spec 1)
+        side = 0
         if sell_sig[t] and not (p.one_per_zone and used_up == up_ep):
-            side = -1
+            side, used_up = -1, up_ep
         elif buy_sig[t] and not (p.one_per_zone and used_dn == dn_ep):
-            side = 1
-        else:
+            side, used_dn = 1, dn_ep
+        if side == 0 or t < free_from or t == n - 1:
             continue
         tr = open_trade(t, side, o, h, l, c, k, a, tm, piv_hi, piv_lo, bull_obs, bear_obs, p)
         if tr is None:
             continue
         trades.append(tr)
         free_from = tr["exit_bar"] + 1
-        if side == -1:
-            used_up = up_ep
-        else:
-            used_dn = dn_ep
     return pd.DataFrame(trades)
 
 
@@ -199,10 +195,12 @@ def open_trade(t, side, o, h, l, c, k, a, tm, piv_hi, piv_lo, bull_obs, bear_obs
     lb = h[max(t - p.sl_lookback + 1, 0):t + 1].max() if side == -1 else l[max(t - p.sl_lookback + 1, 0):t + 1].min()
     swing = lb
     if p.sl_mode == "fractal":
+        # latest confirmed pivot beyond the entry; no pivot -> keep the lookback swing
         piv = piv_hi if side == -1 else piv_lo
         for _, price in reversed(piv):
             if (side == -1 and price > entry) or (side == 1 and price < entry):
-                swing = price
+                recent = h[max(t - p.ob_pivot, 0):t + 1] if side == -1 else l[max(t - p.ob_pivot, 0):t + 1]
+                swing = max(price, recent.max()) if side == -1 else min(price, recent.min())
                 break
     sl = swing + p.spread if side == -1 else swing - p.spread
     risk = abs(entry - sl)
@@ -216,9 +214,8 @@ def open_trade(t, side, o, h, l, c, k, a, tm, piv_hi, piv_lo, bull_obs, bear_obs
             levels = sorted((ob[0] + p.spread for ob in bull_obs if not ob[3] and ob[0] < entry), reverse=True)
         else:
             levels = sorted(ob[1] - p.spread for ob in bear_obs if not ob[3] and ob[1] > entry)
-        levels = [x for x in levels if side * (x - entry) > 0]          # TP must be in profit
         if levels:
-            need = p.min_rr * risk
+            need = max(p.min_rr * risk, 1e-9)       # a TP must at least be in profit
             if side * (levels[0] - entry) >= need:
                 tp = levels[0]
             elif p.ob_too_close == "skip":
@@ -273,8 +270,8 @@ def stats(f: pd.DataFrame, years: float | None = None) -> dict:
                PF=round(r[r > 0].sum() / gl, 2) if gl > 0 else np.inf,
                maxDD=round((np.maximum.accumulate(eq) - eq).max(), 1),
                t=round(r.mean() / r.std(ddof=1) * np.sqrt(len(r)), 2) if len(r) > 2 else np.nan,
-               hold_h=round(((f.exit_time - f.entry_time).dt.total_seconds() / 3600).median(), 1))
-    for reason in ("SL", "TP_OB", "STOCH"):
+               hold_h=round(((f.exit_time - f.entry_time).dt.total_seconds() / 3600).mean(), 1))
+    for reason in ("SL", "TP_OB", "STOCH", "EOD"):
         out[f"%{reason}"] = round((f.reason == reason).mean() * 100)
     if years:
         out["per_yr"] = round(len(r) / years, 1)

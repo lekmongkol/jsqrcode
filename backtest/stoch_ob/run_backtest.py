@@ -49,32 +49,30 @@ def main():
     data = periods()
     rows, all_trades = [], []
     for name, kw in SENSITIVITY.items():
-        frames = []
         for label, df, spread, years in data:
             p = so.Params(spread=spread, **kw)
             f = so.run(df, p)
             f["period"], f["config"] = label, name
-            frames.append(f)
-            rows.append(dict(config=name, period=label, **so.stats(f, years)))
+            all_trades.append(f)
+            rows.append(dict(config=name, period=label, side="ALL", **so.stats(f, years)))
             for side in ("SELL", "BUY"):
-                rows.append(dict(config=name, period=f"{label} {side}",
-                                 **so.stats(f[f.side == side] if len(f) else f, years)))
-        f = pd.concat(frames, ignore_index=True)
-        all_trades.append(f)
-        rows.append(dict(config=name, period="ALL", **so.stats(f, sum(x[3] for x in data))))
+                sub = f[f.side == side] if len(f) else f
+                rows.append(dict(config=name, period=label, side=side, **so.stats(sub, years)))
     res = pd.DataFrame(rows)
     res.to_csv(os.path.join(OUT, "summary.csv"), index=False)
     pd.concat(all_trades, ignore_index=True).to_csv(os.path.join(OUT, "trades.csv"), index=False)
 
+    # in-sample and out-of-sample are printed separately - never pooled (spec 5, 7.3)
     pd.set_option("display.width", 250); pd.set_option("display.max_rows", 500)
-    main_p = res[res.period.isin(["2012-2017", "2018-2022", "2026"])]
-    pf = main_p.pivot_table(index="config", columns="period", values="PF", sort=False)
-    allp = res[res.period == "ALL"].set_index("config")[
-        ["trades", "per_yr", "win", "avgR", "PF", "maxDD", "t", "hold_h", "%SL", "%TP_OB", "%STOCH"]]
-    print(pf.join(allp).to_string())
+    cols = ["trades", "per_yr", "win", "avgR", "PF", "maxDD", "t", "hold_h", "%SL", "%TP_OB", "%STOCH", "%EOD"]
+    for label, *_ in data:
+        tag = "IN-SAMPLE" if label == "2012-2017" else "OUT-OF-SAMPLE"
+        q = res[(res.period == label) & (res.side == "ALL")].set_index("config").reindex(columns=cols)
+        print(f"\n=== {label} ({tag})")
+        print(q.to_string())
     d = res[res.config == next(iter(SENSITIVITY))]
     print("\nDefault by period / side:")
-    print(d.drop(columns="config").to_string(index=False))
+    print(d.drop(columns="config").reindex(columns=["period", "side"] + cols).to_string(index=False))
 
 
 if __name__ == "__main__":
